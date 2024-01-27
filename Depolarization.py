@@ -29,6 +29,22 @@ class Depolarization:
         self.materials = []
         self.data_fit = []
 
+    def add_linear_wp(self, theta_values, delta_values):
+        """
+        Parameters
+        ----------
+        theta_values : THE ORIENTATION OF THE LINEAR WP WITH RESPECT THE HORIZONTAL
+        delta_values : THE TOTAL PHASE-SHIFT INTRODUCED BY THE LINEAR WP 
+
+        Returns
+        -------
+        APPENDS TO THE self.materials LIST, THE PARAMETERS OF THE LINEAR WAVEPLATES
+        """    
+        materials = [theta_values, delta_values]
+
+        self.materials.append(materials)
+        
+
     def read_data(self):
         """
         This function reads the polarimeter data and extract its mean values 
@@ -48,28 +64,10 @@ class Depolarization:
                                           encoding='latin1').mean(axis=None) for filename in all_files]).T
         
             self.data.append(data)
-            
     
-    # COHERENCE FUNCTIONS
+    # COHERENCE FUNCTION
 
-        """
-
-        Parameters
-        ----------
-        l_l :  LORENTZIAN COHERENCE LENGHT.
-        x : VARIABLE.
-        wavelenght: MEAN WAVELENGTH OF THE LIGHT SOURCE
-
-        Returns
-        -------
-        gamma_1 : THE LORENTZIAN COHERENCE FUNCTION
-
-        """
-
-        gamma_1 = np.exp(-(np.abs(x)/l_l) - (2j*x*np.pi/wavelenght)) 
-
-        return gamma_1
-    def coherence(self,x, l_g ,l_l = 0, wavelenght = 0.633):
+    def coherence(self,x, l_g , l_l, wavelength = 0.633):
         """
         Parameters
         ----------
@@ -84,10 +82,66 @@ class Depolarization:
         
         """
 
-        gamma_1 = np.exp(-(np.pi/2)*(x/l_g)**2 -(np.abs(x)/l_l) - (2j*x*np.pi/wavelenght)) 
-
+        #gamma_1 = np.exp(-(np.pi/2)*(x/l_g)**2 - (np.abs(x)/l_l) - (2j*x*np.pi/wavelenght)) 
+        gamma_1 = np.exp(-(np.pi/2)*(x/l_g)**2 - (2j*x*np.pi/wavelength))
+        
         return gamma_1
     
+    
+    #Operators
+
+    def T_elements(self, Matrix):
+        return np.array([i.T for i in Matrix])
+
+    def Ret_matrix(self, OptPathDiff, l_c=[], wavelength=0.633 ):
+        
+        Matrix = np.array([[self.coherence(OptPathDiff, l_c[0], l_c[1], wavelength), 0],
+                     [0,1]])
+    
+        if Matrix.size > 4:
+                return self.T_elements(Matrix.T)
+        else:
+                return Matrix
+    
+    def Pol_matrix(self, init_state = []):
+        
+        alpha = init_state[0]
+        chi = init_state[1]
+        
+        E_x = np.cos(alpha)*np.cos(chi) - 1j*np.sin(alpha)*np.sin(chi)
+        E_y = np.sin(alpha)*np.cos(chi) + 1j*np.cos(alpha)*np.sin(chi)
+        
+        Matrix = np.array([[E_x*np.conjugate(E_x) , E_x*np.conjugate(E_y)],
+                     [E_y*np.conjugate(E_x) , E_y*np.conjugate(E_y)]]) 
+        
+        if Matrix.size > 4:
+                return self.T_elements(Matrix.T)
+        else:
+                return Matrix
+        
+    def Rot_matrix(self, angle):
+
+        Matrix = np.array([[np.cos(angle) , np.sin(angle)],
+                     [-np.sin(angle) , np.cos(angle)]]) 
+                     
+        if Matrix.size > 4:
+                return self.T_elements(Matrix.T)
+        else:
+                return Matrix
+
+
+    #METHOD TO BUILD CW
+        
+    def CW(self, angle ,OptPathDiff = [], Angles = [], init_state = [], l_c=[], wavelength=0.633):
+    
+        aux = np.array([[1,0],[0,1]])
+        for i in range(OptPathDiff.size):
+            R = self.Rot_matrix(angle + Angles[i])
+            Ret = self.Ret_matrix(OptPathDiff[i], l_c, wavelength)
+            aux = self.T_elements(R) @ Ret @ R @ aux
+
+        J = self.Pol_matrix(init_state)
+        return aux @ J @ self.T_elements(aux.conjugate())
     
     #PARTICULAR CASES OF WAVEPLATES WITH A LINEAR BASIS
     
@@ -119,7 +173,6 @@ class Depolarization:
         E_x = np.cos(alpha)*np.cos(chi) - 1j*np.sin(alpha)*np.sin(chi)
         E_y = np.sin(alpha)*np.cos(chi) + 1j*np.cos(alpha)*np.sin(chi)
         
-        
         A = E_x*np.conjugate(E_y)
         
         J11 = E_x*np.conjugate(E_x)
@@ -128,6 +181,58 @@ class Depolarization:
         
         J12 = A*self.coherence(OptPathDiff, l_c[0], l_c[1])
         
+        J21 = np.conjugate(J12)
+        
+        DOP = np.sqrt((1 - 4*(J11 * J22 - J21*J12) / (J11 + J22)**2))
+        
+        return np.real(DOP), np.real(J11 - J22), np.real(J12 + J21), np.real(1j*(J12 - J21))
+    
+    def WP_circ(self, OptPathDiff, l_c = [], init_state = []):
+        
+        """
+        Parameters
+        ----------
+        OptPathDiff: OPTICAL PATH DIFFERENCE INTRODUCE BY THE RETARDER
+        l_c : A list of the form [l_g, l_l]
+            l_g :  GAUSSIAN COHERENCE LENGHT.
+            l_l : LORENTZIAN COHERENCE LENGHT.
+        init_state : A list of the form [alpha, chi]
+            alpha = ORIENTATION ANGLE OF THE INCIDENT POLARIZATION STATE.
+            CHI = ELIPTICITY ANGLE OF THE INCIDENT POLARIZATION STATE.
+
+        Returns
+        -------
+        DOP, S1, S2, S3
+        
+        DOP : THE DEGREE OF POLARIZATION
+        [S1, S2, S3] : THE TRANSFORMED STOKES PARAMETERS
+
+        """
+        
+        alpha = init_state[0]
+        chi = init_state[1]
+        
+        E_x = np.cos(alpha)*np.cos(chi) - 1j*np.sin(alpha)*np.sin(chi)
+        E_y = np.sin(alpha)*np.cos(chi) + 1j*np.cos(alpha)*np.sin(chi)
+        
+        #E_x = (1/np.sqrt(2))*(np.cos(chi) - np.sin(chi))*np.exp(1j*alpha)
+        #E_y = (1/np.sqrt(2))*(np.cos(chi) + np.sin(chi))*np.exp(-1j*alpha)
+        
+        #Coherence functions
+        Real = np.real( self.coherence(OptPathDiff, l_c[0], l_c[1]) )
+        Imag = np.imag( self.coherence(OptPathDiff, l_c[0], l_c[1]) )
+        
+        A = E_y*np.conjugate(E_y) - E_x*np.conjugate(E_x)
+        A1 = E_y*np.conjugate(E_y) + E_x*np.conjugate(E_x)
+        B = E_x*np.conjugate(E_y) - E_y*np.conjugate(E_x)
+        B1 = E_x*np.conjugate(E_y) + E_y*np.conjugate(E_x)
+        
+        #J11 = -1/4*(A*2*Real + B*2j*Imag - 2*A1)
+        J11 = -(1/4)*(A*2*Real + B1*2*Imag - 2*A1)
+        J22 = 1 - J11
+        
+        #J12 =  1/4*(A*2j*Imag + B*2*Real + 2*B1)
+        J12 = (1/4)*(-A*2*Imag + B1*2*Real + 2*B)
         J21 = np.conjugate(J12)
         
         DOP = np.sqrt((1 - 4*(J11 * J22 - J21*J12) / (J11 + J22)**2))
@@ -196,7 +301,6 @@ class Depolarization:
         
         return np.real(DOP), np.real(J11 - J22), np.real(J12 + J21), np.real(1j*(J12 - J21))
     
-    
     def CW1(self, total_angle, angle_second ,OptPathDiff, l_c = [], init_state = []):
         
         """
@@ -242,8 +346,8 @@ class Depolarization:
         #Coherence functions
         Real1 = np.real(self.coherence(OptPathDiff, l_c[0], l_c[1]))
         Imag1 = np.imag(self.coherence(OptPathDiff, l_c[0], l_c[1]))
-        Real2 = np.real(self.coherence(OptPathDiff, l_c[0], l_c[1]))
-        Imag2 = np.imag(self.coherence(OptPathDiff, l_c[0], l_c[1]))
+        Real2 = np.real(self.coherence(2*OptPathDiff, l_c[0], l_c[1]))
+        Imag2 = np.imag(self.coherence(2*OptPathDiff, l_c[0], l_c[1]))
         
         # Elements of the final polarization matrix
         
@@ -281,7 +385,25 @@ class Depolarization:
         return np.real(DOP), J11 - J22, J12 + J21, 1j*(J12 - J21)
         #return np.real(DOP)
     
-            
+    # GENERAL CASE OF A COMPOSITE WAVEPLATE
+    def CW(angle ,OptPathDiff = [], Angles = [], init_state = [], l_c=[], wavelength=0.633):
+    
+        aux = np.array([[1,0],[0,1]])
+        for i in range(OptPathDiff.size):
+            R = Rot_matrix(angle + Angles[i])
+            Ret = Ret_matrix(OptPathDiff[i], l_c, wavelength)
+            aux = T_elements(R) @ Ret @ R @ aux
+
+        J = Pol_matrix(init_state)
+        Gamma = aux @ J @ T_elements(aux.conjugate())
+
+        J11, J12, J21, J22 = Gamma[:,0,0], Gamma[:,0,1], Gamma[:,1,0], Gamma[:,1,1]
+
+        s0, s1, s2, s3 = np.real(J11 + J22), np.real(J11 - J22), np.real(J12 + J21), np.real(1j*(J12 - J21))
+
+        return s0, s1, s2, s3
+
+    # GRAPHIC METHODS
     def graph_fit_DOP(self,i):
         
         
@@ -344,7 +466,7 @@ class Depolarization:
         ax.plot(yy, zz, xx, color='gray', linewidth=1.5, alpha = 1)
 
     # Graphic the Data on the Sphere
-        ax.scatter(s_1, s_2, s_3, color='red', alpha = 1, s=2)
+        ax.scatter(s_1, s_2, s_3, color='red', alpha = 1, s=10)
 
     #Configure the image
         fig.set_size_inches(9, 9)
@@ -384,13 +506,15 @@ class Depolarization:
        plt.plot(t,s_3)
        plt.show()
     
-    def dop(self,phi):
+    def dop(self):
         
-        x, y = np.meshgrid(np.linspace(0,np.pi,1000),np.linspace(0,np.pi/2,1000))
+        x, y = np.meshgrid(np.linspace(0,np.pi,100),np.linspace(0,np.pi/4,100))
         
         fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
 
-        ax.plot_surface(x,y,self.CW1(x,y, 25,20,0,0)[0], cmap=cm.coolwarm, linewidth=2)
+        #ax.plot_surface(x,y,self.CW1(0,np.pi/8,(14 + 1/2)*0.633,[20,0.1],[x,y])[0], cmap=cm.coolwarm, linewidth=2)
+        ax.plot_surface(x,y,self.CW(9, [10,10], [0, np.pi/4], [x,y])[0], cmap=cm.coolwarm, linewidth=2)
+        #ax.plot_surface(x,y,self.WP_circ(10.4, [20,10], [x,y])[0], cmap=cm.coolwarm, linewidth=2)
 
 path1 = 'Despolarizacion datos/Articulo despolarizacion/datos/biplaca theta 45/incidente lineal/'
 path2 = 'Despolarizacion datos/Articulo despolarizacion/datos/biplaca theta 45/incidente circular/'
@@ -400,6 +524,12 @@ path = [path1, path2, path3]
 
 
 u = np.linspace(0, np.pi, 100)
+
+
+
 #path = [path1, path2, path3, path4]
-m = Main(path = path)
+m = Depolarization(path = path)
 m.read_data()
+#DOP, S1, S2, S3 = m.WP_circ((40)*0.633,[20,10],[u,1])
+#DOP, S1, S2, S3 = m.CW1(0,np.pi/4,(10 + 1/2)*0.633,[20,0.1],[u,1])
+#m.graphic(S1/DOP, S2/DOP, S3/DOP)
