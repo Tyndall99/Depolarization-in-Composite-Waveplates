@@ -37,61 +37,37 @@ class Coherence:
         func = 90/np.pi**4 * mpmath.zeta(4, 1 + 1j*1.16e-19*OptPathDiff/wavelength)
         return func
     
-    def __init__(self, coherence_func = 'Gaussian', OptPathDiff = 1, **kwargs):
+    def __init__(self, coherence_func = 'Gaussian', **kwargs):
         self.coherence_func = coherence_func
         if self.coherence_func not in self.coherences:
             raise ValueError(f'Coherence function not valid, please use one in {self.coherences}')
-        
-        self.OptpathDiff = OptPathDiff
         self.wavelength = kwargs.get("wavelength")
         self.temperature = kwargs.get("temperature")
-        
+        self.kwargs = kwargs
+          
+    def eval(self, OptPathDiff):
         if self.coherence_func == 'Gaussian':
-            coh_lenght = kwargs.get('coherence_length')
+            coh_lenght = self.kwargs.get('coh_length')
             self.coherence_length = coh_lenght
-            self._coherence = Coherence.gaussian(self.OptpathDiff, self.coherence_length, self.wavelength)
+            self._coherence = Coherence.gaussian(OptPathDiff, self.coherence_length, self.wavelength)
+            return self._coherence
         
         elif self.coherence_func == 'Lorentzian':
-            coh_lenght = kwargs.get('coherence_length')
+            coh_lenght = self.kwargs.get('coh_length')
             self.coherence_length = coh_lenght
-            self._coherence = Coherence.lorentzian(self.OptPathDiff, self.coherence_length, self.wavelength)
+            self._coherence = Coherence.lorentzian(OptPathDiff, self.coherence_length, self.wavelength)
+            return self._coherence
         
         elif self.coherence_func == 'GaussLorentz':
-            coh_lenght_G, coh_lenght_L = kwargs.get('coherence_length', ())
+            coh_lenght_G, coh_lenght_L = self.kwargs.get('coh_length', ())
             self.coherence_length = (coh_lenght_G, coh_lenght_L)
-            self._coherence = Coherence.gauss_lorentz(self.OptPathDiff, self.coherence_length, self.wavelength)
-        
+            self._coherence = Coherence.gauss_lorentz(OptPathDiff, self.coherence_length, self.wavelength)
+            return self._coherence
+            
         elif self.coherence_func == 'BlackBody':
-            self._coherence = Coherence.blackbody(self.OptPathDiff, self.wavelength)
-
-        self.real = np.real(self._coherence)
-        self.imag = np.imag(self._coherence)
-        self.abs = np.abs(self._coherence)
-        self.angle = np.angle(self._coherence)
-
-    def __repr__(self):
-        return f'{self._coherence}'
-    
-    def __add__(self, other):
-        return self._coherence + other
-    def __radd__(self, other):
-        return self.__add__(other)
-    
-    def __sub__(self, other):
-        return self._coherence - other
-    def __rsub__(self, other):
-        return self.__sub__(other)
-    
-    def __mul__(self, other):
-        return self._coherence * other
-    def __rmul__(self, other):
-        return self.__mul__(other)
-    
-    def __pow__(self, other):
-        return self._coherence ** other
-    def __rpow__(self, other):
-        return other ** self._coherence
-
+            self._coherence = Coherence.blackbody(OptPathDiff, self.wavelength)
+            return self._coherence
+        
 class State(spy.Matrix):
 
     def pauli_matrices():
@@ -169,6 +145,7 @@ class State(spy.Matrix):
         self.alpha = alpha
         self.chi = chi
         self.basis = basis
+        self.dop = 1
         self.Matrix_Basis_Change = State.basis_change(basis[0], basis[1])
 
     @property
@@ -233,14 +210,14 @@ class State(spy.Matrix):
     def Poincare_sphere(cls):
         Graphic([cls])
     
-    def operate(cls, operators, coh_length = 18):
+    def operate(cls, operators, coherence):
         transformed_states = [spy.expand(operator * cls * operator.adjoint()).rewrite(spy.cos).expand() for operator in operators]
         operated_state = []
         for operator, state in zip(operators, transformed_states):
             list_of_OPD, list_of_sines, list_of_cosines = operator.list_of_phases()
             for OPD, sine, cosine in zip(list_of_OPD, list_of_sines, list_of_cosines):
-                state = state.subs(sine, np.imag(Coherence.gaussian(OPD, coh_length)))
-                state = state.subs(cosine, np.real(Coherence.gaussian(OPD, coh_length)))
+                state = state.subs(sine, np.imag(coherence.eval(OPD)))
+                state = state.subs(cosine, np.real(coherence.eval(OPD)))
             J11 = state[0]
             J12 = state[1]
             J21 = state[2]
@@ -270,7 +247,7 @@ class Partial_State(spy.Matrix):
     @property
     def stokes(cls):
         pauli_vector = State.pauli_matrices()
-        Stokes = [float(spy.N(spy.nsimplify(spy.trace(sigma*cls), tolerance = 1e-3), 3)) for sigma in pauli_vector]
+        Stokes = [spy.N(spy.nsimplify(spy.re(spy.trace(sigma*cls)), tolerance = 1e-3), 3) for sigma in pauli_vector]
         return Stokes 
     
     @property
@@ -355,7 +332,11 @@ class Waveplate(spy.Matrix):
         self.OptPathDiff = OptPathDiff
         self.angle = np.deg2rad(angle)
         self.basis = basis
-        self.eigenstate = eigenstate
+        self.eigenstate = eigenstate 
+    
+    def rotate(self, angle):
+        return Waveplate(self.OptPathDiff, np.rad2deg(self.angle) + angle, self.eigenstate, self.basis)
+        
         
 class Composite_waveplate(spy.Matrix):
     
@@ -366,15 +347,11 @@ class Composite_waveplate(spy.Matrix):
             v = len(s)
             for t in range(v):
                 s.append(s[t] + nums[i]) # add this element with previous subsets
-                s.append(-s[t] + nums[i])# substract this element with previous subsets
+                s.append(-s[t] + nums[i]) # substract this element with previous subsets
         del s[0]
         
         return sorted(list(set(np.abs(s))))
     
-    def __init__(self, Waveplates):
-        self.waveplates = Waveplates
-        super().__init__()
-
     def __new__(cls, Waveplates):
         cls.waveplates = Waveplates
         cls.operator = spy.expand(spy.prod(cls.waveplates[::-1]))
@@ -382,6 +359,14 @@ class Composite_waveplate(spy.Matrix):
             [cls.operator[0], cls.operator[1]],
             [cls.operator[2], cls.operator[3]]
             ])
+    
+    def __init__(self, Waveplates):
+        self.waveplates = Waveplates
+        super().__init__()
+        
+    def rotate(self, angle):
+        list_of_wp = [wp.rotate(angle) for wp in self.waveplates]
+        return Composite_waveplate(list_of_wp)
 
     def list_of_phases(self):
         OptPathDiff_list = [wp.OptPathDiff for wp in self.waveplates]  
@@ -390,14 +375,14 @@ class Composite_waveplate(spy.Matrix):
         list_of_cosines = [spy.cos(OPD) for OPD in list_of_OPD]
         return list_of_OPD, list_of_sines, list_of_cosines
 
-    def operate(cls, states, coh_length = 18):
+    def operate(cls, states, coherence):
         transformed_states = [spy.expand(cls.operator * state * cls.operator.adjoint()).rewrite(spy.cos).expand() for state in states]
         list_of_OPD, list_of_sines, list_of_cosines= cls.list_of_phases()
         operated_state = []
         for state in transformed_states:
             for OPD, sine, cosine in zip(list_of_OPD, list_of_sines, list_of_cosines):
-                state = state.subs(sine, np.imag(Coherence.gaussian(OPD, coh_length)))
-                state = state.subs(cosine, np.real(Coherence.gaussian(OPD, coh_length)))
+                state = state.subs(sine, np.imag(coherence.eval(OPD)))
+                state = state.subs(cosine, np.real(coherence.eval(OPD)))
             J11 = state[0]
             J12 = state[1]
             J21 = state[2]
@@ -436,14 +421,9 @@ def Graphic(State: list):
     ax.plot(yy, zz, xx, color='gray', linewidth=1.5, alpha = 1)
 
     # Graphic the Data on the Sphere
-    if np.size(State) > 1:
-        s1 = [state.s1 for state in State]
-        s2 = [state.s2 for state in State]
-        s3 = [state.s3 for state in State]
-    else:
-        s1 = State.s1
-        s2 = State.s2
-        s3 = State.s3
+    s1 = [state.s1 / state.dop for state in State]
+    s2 = [state.s2 / state.dop for state in State]
+    s3 = [state.s3 / state.dop for state in State]
 
     ax.scatter(s1, s2, s3, color='red', alpha = 1, s=30)
 
